@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Предпросмотр</title>
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+    background: #0f1115; color: #e7e9ee; padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 380px; background: #171a21;
+    border: 1px solid #262b36; border-radius: 16px; padding: 32px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.4);
+  }
+  .mark {
+    width: 40px; height: 40px; border-radius: 10px; margin-bottom: 20px;
+    background: linear-gradient(135deg, #D100FF, #00ADFF);
+  }
+  h1 { font-size: 17px; margin: 0 0 6px; font-weight: 600; letter-spacing: -.01em; }
+  p.sub { margin: 0 0 22px; color: #8b93a3; font-size: 13px; }
+  label { display: block; font-size: 12px; color: #8b93a3; margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 11px 13px; border-radius: 9px; border: 1px solid #2d3341;
+    background: #0f1115; color: #e7e9ee; font-size: 15px; font-family: inherit;
+  }
+  input:focus { outline: none; border-color: #00ADFF; box-shadow: 0 0 0 3px rgba(0,173,255,.16); }
+  button {
+    width: 100%; margin-top: 14px; padding: 11px; border: 0; border-radius: 9px;
+    background: linear-gradient(135deg, #D100FF, #00ADFF); color: #fff;
+    font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: default; }
+  .err { margin-top: 12px; font-size: 13px; color: #ff6b6b; min-height: 18px; }
+  .hint { margin-top: 18px; font-size: 11px; color: #5e6675; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="card" id="gate">
+  <div class="mark"></div>
+  <h1>Предпросмотр макета</h1>
+  <p class="sub">Страница зашифрована. Введите пароль — он сохранится в этом браузере, дальше открытие будет сразу.</p>
+  <form id="f">
+    <label for="pw">Пароль</label>
+    <input id="pw" type="password" autocomplete="current-password" autofocus>
+    <button id="go" type="submit">Открыть</button>
+  </form>
+  <div class="err" id="err"></div>
+  <div class="hint">Расшифровка происходит целиком в браузере: пароль никуда не отправляется, на сервере лежит только зашифрованный файл.</div>
+</div>
+
+<script>
+(function () {
+  var PAYLOAD = "aigtLxYLrrLORYl2qUysbjMkEgRa+jpopQcUVxlJKmy3U1isD4ROCPqzAzI93/xD/QhY61RVfjT9UyOVHYoLlgjs9rnVuivKFIG94vXBzgmU1rN2hiY=";
+  var SALT = "ul85CBjm81hJ11+p1n1ZbQ==";
+  var IV = "OhMZp5zceE5LjngJ";
+  var ITER = 310000;
+  var COOKIE = "pv_key";
+
+  function b64(s) {
+    var bin = atob(s), a = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+    return a;
+  }
+  function getCookie(name) {
+    var m = document.cookie.match(new RegExp('(^|; )' + name + '=([^;]*)'));
+    return m ? decodeURIComponent(m[2]) : null;
+  }
+  function setCookie(name, val) {
+    // 1 год; перевыкладка дизайна пароль не меняет, поэтому cookie переживает деплои
+    document.cookie = name + '=' + encodeURIComponent(val) +
+      '; path=/; max-age=31536000; samesite=lax' +
+      (location.protocol === 'https:' ? '; secure' : '');
+  }
+
+  async function decrypt(password) {
+    var enc = new TextEncoder();
+    var km = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    var key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: b64(SALT), iterations: ITER, hash: 'SHA-256' },
+      km, { name: 'AES-GCM', length: 256 }, false, ['decrypt']
+    );
+    // Неверный пароль => провал проверки тега GCM => исключение. Отдельная
+    // проверка пароля не нужна и не нужен хеш пароля в файле.
+    var plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(IV) }, key, b64(PAYLOAD));
+    var stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(stream).text();
+  }
+
+  function render(html) {
+    document.open();
+    document.write(html);
+    document.close();
+  }
+
+  var form = document.getElementById('f');
+  var pw = document.getElementById('pw');
+  var go = document.getElementById('go');
+  var err = document.getElementById('err');
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    err.textContent = '';
+    go.disabled = true;
+    go.textContent = 'Расшифровка…';
+    try {
+      var html = await decrypt(pw.value);
+      setCookie(COOKIE, pw.value);
+      render(html);
+    } catch (_) {
+      err.textContent = 'Неверный пароль';
+      go.disabled = false;
+      go.textContent = 'Открыть';
+      pw.select();
+    }
+  });
+
+  // Повторный заход: пароль уже в cookie — открываем молча.
+  var saved = getCookie(COOKIE);
+  if (saved) {
+    document.getElementById('gate').style.visibility = 'hidden';
+    decrypt(saved).then(render).catch(function () {
+      document.getElementById('gate').style.visibility = 'visible';
+      err.textContent = 'Сохранённый пароль больше не подходит';
+    });
+  }
+})();
+</script>
+</body>
+</html>
